@@ -1,0 +1,6 @@
+.git
+bin
+benchmarks/results
+k8s
+deploy
+*.md

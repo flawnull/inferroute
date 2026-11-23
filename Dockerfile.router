@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOTOOLCHAIN=local
+COPY go.mod go.sum ./
+# Optional extra CA bundle for builds behind a TLS-intercepting proxy:
+#   docker build --secret id=ca,src=/path/to/ca-bundle.crt ...
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=secret,id=ca,required=false \
+    if [ -s /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca; fi; \
+    go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -ldflags="-s -w" -o /out/router ./cmd/router
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/router /router
+
+EXPOSE 8080
+USER 65532:65532
+HEALTHCHECK --interval=5s --timeout=2s --start-period=3s --retries=3 \
+    CMD ["/router", "-healthcheck", "http://127.0.0.1:8080/healthz"]
+ENTRYPOINT ["/router"]

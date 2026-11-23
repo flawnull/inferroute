@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inferroute-worker
+  namespace: inferroute
+  labels: {app: inferroute-worker}
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: inferroute-worker}
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels: {app: inferroute-worker}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9091"
+    spec:
+      # Must exceed DRAIN_TIMEOUT so in-flight requests finish on SIGTERM.
+      terminationGracePeriodSeconds: 35
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: worker
+          image: inferroute/worker:dev
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: {name: inferroute-worker}
+          env:
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+          ports:
+            - {name: grpc, containerPort: 50051}
+            - {name: admin, containerPort: 9091}
+          # /healthz turns 503 while draining, which drops the pod from the
+          # headless Service before the router's next discovery pass.
+          readinessProbe:
+            httpGet: {path: /healthz, port: admin}
+            periodSeconds: 2
+            failureThreshold: 1
+          livenessProbe:
+            tcpSocket: {port: grpc}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inferroute-worker
+  namespace: inferroute
+spec:
+  clusterIP: None # headless: DNS returns every ready pod IP
+  selector: {app: inferroute-worker}
+  ports:
+    - {name: grpc, port: 50051, targetPort: grpc}
+    - {name: admin, port: 9091, targetPort: admin}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inferroute-worker
+  namespace: inferroute
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inferroute-worker
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 70}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inferroute-worker
+  namespace: inferroute
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app: inferroute-worker}

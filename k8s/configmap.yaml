@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferroute-router
+  namespace: inferroute
+data:
+  # Headless Service DNS: one A record per ready worker pod. The router
+  # re-resolves it every DISCOVERY_INTERVAL, so HPA scale-out is picked up.
+  WORKER_DNS: inferroute-worker.inferroute.svc.cluster.local:50051
+  DISCOVERY_INTERVAL: 5s
+  MODELS: phi-3-mini=1024,llama-3-8b=2048,mistral-7b=2048,mixtral-8x7b=6144
+  RATE_LIMIT_RPS: "100"
+  RATE_LIMIT_BURST: "200"
+  TENANT_LIMITS: tenant-free=20:40,tenant-pro=200:400,tenant-enterprise=1000:2000
+  HEARTBEAT_INTERVAL: 500ms
+  UNHEALTHY_AFTER: "2"
+  BREAKER_FAILURE_THRESHOLD: "5"
+  BREAKER_OPEN_TIMEOUT: 2s
+  BREAKER_JITTER: "0.5"
+  REQUEST_TIMEOUT: 10s
+  ATTEMPT_TIMEOUT: 3s
+  QUEUE_TIMEOUT: 1s
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferroute-worker
+  namespace: inferroute
+data:
+  TOTAL_VRAM_MB: "48000"
+  BASE_LATENCY_MS: "60"
+  JITTER_MS: "25"
+  PER_TOKEN_MS: "0.4"
+  CONTENTION: "0.02"
+  DRAIN_TIMEOUT: 25s

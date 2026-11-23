@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: router
+    static_configs:
+      - targets: ["router:8080"]
+  - job_name: workers
+    static_configs:
+      - targets: ["worker-1:9091", "worker-2:9091", "worker-3:9091"]

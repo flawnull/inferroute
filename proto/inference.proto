@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package inferroute.v1;
+
+option go_package = "inferroute/gen/inferencepb;inferencepb";
+
+// WorkerService is implemented by every inference worker. The router is the
+// only client: it calls Infer on the data path and Heartbeat on a fixed
+// interval to keep its view of worker capacity fresh.
+service WorkerService {
+  rpc Infer(InferRequest) returns (InferResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message InferRequest {
+  string request_id = 1;
+  string model_id = 2;
+  int32 prompt_tokens = 3;
+  int32 max_tokens = 4;
+  int64 required_vram_mb = 5;
+  // Informational; used for worker-side logging only.
+  string tenant_id = 6;
+}
+
+message InferResponse {
+  string request_id = 1;
+  string worker_id = 2;
+  string output = 3;
+  int32 completion_tokens = 4;
+  // Simulated compute time on the worker, excluding network.
+  double compute_ms = 5;
+}
+
+message HeartbeatRequest {
+  string router_id = 1;
+}
+
+message HeartbeatResponse {
+  string worker_id = 1;
+  int64 available_vram_mb = 2;
+  int64 total_vram_mb = 3;
+  int32 active_requests = 4;
+  double ewma_latency_ms = 5;
+  // False while draining or when fault injection marks the worker unhealthy.
+  bool healthy = 6;
+}

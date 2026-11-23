@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inferroute-router
+  namespace: inferroute
+  labels: {app: inferroute-router}
+spec:
+  # One replica: rate limits and VRAM reservations are per router process.
+  # See README "Scaling the router" before raising this.
+  replicas: 1
+  selector:
+    matchLabels: {app: inferroute-router}
+  template:
+    metadata:
+      labels: {app: inferroute-router}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: router
+          image: inferroute/router:dev
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: {name: inferroute-router}
+          env:
+            - name: ROUTER_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 200m, memory: 64Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inferroute-router
+  namespace: inferroute
+spec:
+  type: NodePort
+  selector: {app: inferroute-router}
+  ports:
+    - {name: http, port: 8080, targetPort: http, nodePort: 30080}
