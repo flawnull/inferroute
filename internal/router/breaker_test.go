@@ -184,7 +184,7 @@ func TestBreakerTripForcesOpen(t *testing.T) {
 	}
 }
 
-func TestBreakerConcurrentUse(t *testing.T) {
+func TestBreakerConcurrentUse(_ *testing.T) {
 	b := NewBreaker(BreakerConfig{FailureThreshold: 3, OpenTimeout: time.Millisecond, HalfOpenMaxProbes: 2})
 	var wg sync.WaitGroup
 	for i := range 32 {

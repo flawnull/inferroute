@@ -125,7 +125,8 @@ func loadConfig() (router.RegistryConfig, router.Config, router.Discoverer, erro
 			Rate:  envconf.Float("RATE_LIMIT_RPS", 100),
 			Burst: envconf.Float("RATE_LIMIT_BURST", 200),
 		},
-		TenantLimits: tenants,
+		TenantLimits:    tenants,
+		MaxTenantLabels: int(envconf.Int("MAX_TENANT_LABELS", 100)),
 	}
 	return regCfg, rtCfg, disc, nil
 }

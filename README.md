@@ -1,5 +1,7 @@
 # inferroute
 
+[![ci](https://github.com/flawnull/inferroute/actions/workflows/ci.yml/badge.svg)](https://github.com/flawnull/inferroute/actions/workflows/ci.yml)
+
 A distributed inference router and scheduler in Go. It routes simulated LLM inference requests across a pool of GPU workers. Placement accounts for VRAM. It enforces per-tenant token-bucket rate limits, runs a circuit breaker per worker, fails over automatically, and exports Prometheus metrics.
 
 Workers simulate GPUs: each one has a VRAM budget, a latency profile, batch contention, and fault injection. The control plane around them is built the way you would build one for real hardware.
@@ -255,6 +257,7 @@ Router (all optional):
 | `WORKER_DNS` | | `host:port` resolved every `DISCOVERY_INTERVAL`; overrides `WORKERS` |
 | `MODELS` | `phi-3-mini=1024,llama-3-8b=2048,mistral-7b=2048,mixtral-8x7b=6144` | Model to VRAM MB |
 | `RATE_LIMIT_RPS`, `RATE_LIMIT_BURST` | `100`, `200` | Default per-tenant bucket |
+| `MAX_TENANT_LABELS` | `100` | Distinct tenants that get their own metric label; later ones are reported as `other`. `X-Tenant-ID` is caller-controlled, so this bounds Prometheus cardinality |
 | `TENANT_LIMITS` | | `tenant=rps:burst,...` |
 | `HEARTBEAT_INTERVAL`, `HEARTBEAT_TIMEOUT`, `UNHEALTHY_AFTER` | `500ms`, `400ms`, `2` | |
 | `BREAKER_FAILURE_THRESHOLD`, `BREAKER_OPEN_TIMEOUT`, `BREAKER_MAX_OPEN_TIMEOUT`, `BREAKER_JITTER` | `5`, `2s`, `30s`, `0.5` | |
@@ -271,11 +274,31 @@ Worker: `WORKER_ID`, `GRPC_ADDR` (`:50051`), `ADMIN_ADDR` (`:9091`), `TOTAL_VRAM
 - **Rate limiter:** burst and deny with exact `Retry-After`, lazy refill, tenant isolation and overrides, exactly `burst` admits across 50 racing goroutines, eviction.
 - **Scheduler:** latency preference, load balancing, filtering out unhealthy, open, too-small or full workers, exclusion, no-oversubscription under a 200-goroutine burst, waiting for released capacity, half-open single probe.
 - **Worker:** VRAM CAS pool, `ResourceExhausted`, release on cancel and fault, drain semantics and timeout, admin endpoint.
-- **End to end** (`internal/e2e`), with a real HTTP router and real gRPC workers on loopback:
+- **Routing** (`internal/router/routing_test.go`), through the real HTTP handler, scheduler and breaker:
+  - `Unavailable`, `ResourceExhausted` and a hung worker fail over to the next worker; the client sees one success.
+  - `InvalidArgument` returns 400 and `Internal` returns 502, and neither is retried on another worker.
+  - Failover stops at `MAX_ATTEMPTS`; an exhausted request gets 503 with `Retry-After`, an expired one 504.
+  - Client errors, a caller's own deadline and a client disconnect never count against a worker's breaker.
+  - `X-Request-ID` is echoed and forwarded, `timeout_ms` is capped, bodies over 1 MiB never reach a worker.
+  - Caller-chosen tenant ids cannot create unbounded Prometheus series (see `MAX_TENANT_LABELS`).
+- **In-process end to end** (`internal/e2e/failover_test.go`), with a real HTTP router and real gRPC workers on loopback:
   - Crash one of two workers under 24-way concurrent load: zero dropped requests.
   - Graceful drain under load: zero dropped requests.
   - Crash and restart on the same port: recovery through half-open and traffic resumes.
   - Two addresses for one worker: counted once, `/metrics` stays valid.
+- **Process end to end** (`internal/e2e/process_test.go`): the real `router` and `worker` binaries, built with `-race`, run as separate OS processes and are driven only through HTTP and Unix signals:
+  - `SIGKILL` of a worker under load drops no requests, and the failovers show up in `/metrics`.
+  - `SIGTERM` drains a worker with nothing dropped, and the process exits 0.
+  - An error storm injected through `/admin/faults` opens the worker's breaker and moves all traffic away; clearing it earns the traffic back.
+  - A hung worker (60 s injected latency) is abandoned after `ATTEMPT_TIMEOUT`; with every worker hung, the caller gets 504 at its own deadline.
+  - A crashed worker restarted on the same address rejoins; with no workers, `/readyz` and `/v1/infer` return 503.
+  - The router exits 0 on `SIGTERM`.
+
+`go test -short ./...` skips the process tests.
+
+The tests were mutation-checked: each routing rule above was broken on purpose (no retry on `Unavailable`, no per-attempt timeout, no timeout cap, reusing the failed worker, one attempt too many, wrong status mapping, ignored `X-Request-ID` or `required_vram_mb`, a draining worker accepting work, an unbounded tenant label, and others), and a named test failed every time.
+
+What is faked: the GPU itself, by design. In `routing_test.go` the workers are scripted gRPC clients, so those tests can return errors a real worker can't be made to produce (`Internal`, and `InvalidArgument` or `ResourceExhausted` after the router's own checks pass). The failover cases that a real worker can produce, `Unavailable` and a hang, are also covered against real worker processes in `process_test.go`.
 
 ## Not verified here
 

@@ -22,9 +22,17 @@ func newTestRouter(t *testing.T, cfg Config, ws ...*Worker) *httptest.Server {
 	return ts
 }
 
-func post(t *testing.T, url, tenant, body string) *http.Response {
+type posted struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func post(t *testing.T, url, tenant, body string) posted {
 	t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, url+"/v1/infer", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url+"/v1/infer", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if tenant != "" {
 		req.Header.Set("X-Tenant-ID", tenant)
 	}
@@ -32,8 +40,30 @@ func post(t *testing.T, url, tenant, body string) *http.Response {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
-	return resp
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return posted{StatusCode: resp.StatusCode, Header: resp.Header}
+}
+
+// get fetches path and decodes a JSON body into v when v is not nil.
+func get(t *testing.T, url string, v any) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if v != nil {
+		if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return resp.StatusCode
 }
 
 func TestHTTPValidation(t *testing.T) {
@@ -87,23 +117,16 @@ func TestHTTPNoWorkers503(t *testing.T) {
 func TestHealthAndReady(t *testing.T) {
 	w := newTestWorker(fakeWorker{addr: "a:1", vram: 1000})
 	ts := newTestRouter(t, Config{}, w)
-	resp, _ := http.Get(ts.URL + "/healthz")
 	var hb healthBody
-	_ = json.NewDecoder(resp.Body).Decode(&hb)
-	resp.Body.Close()
-	if resp.StatusCode != 200 || hb.Status != "degraded" || len(hb.Workers) != 1 {
-		t.Fatalf("healthz %d %+v", resp.StatusCode, hb)
+	if code := get(t, ts.URL+"/healthz", &hb); code != http.StatusOK || hb.Status != "degraded" || len(hb.Workers) != 1 {
+		t.Fatalf("healthz %d %+v", code, hb)
 	}
-	resp, _ = http.Get(ts.URL + "/readyz")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("readyz with no healthy workers = %d", resp.StatusCode)
+	if code := get(t, ts.URL+"/readyz", nil); code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz with no healthy workers = %d", code)
 	}
 	w.healthy.Store(true)
-	resp, _ = http.Get(ts.URL + "/readyz")
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("readyz = %d", resp.StatusCode)
+	if code := get(t, ts.URL+"/readyz", nil); code != http.StatusOK {
+		t.Fatalf("readyz = %d", code)
 	}
 }
 

@@ -74,7 +74,7 @@ func TestInferSuccessReleasesVRAM(t *testing.T) {
 func TestInferResourceExhausted(t *testing.T) {
 	s := newTestServer(t, 1000)
 	release := make(chan struct{})
-	s.sleep = func(ctx context.Context, _ time.Duration) error { <-release; return nil }
+	s.sleep = func(context.Context, time.Duration) error { <-release; return nil }
 
 	errc := make(chan error, 1)
 	go func() { _, err := s.Infer(context.Background(), req(800)); errc <- err }()
@@ -172,16 +172,28 @@ func TestDrainRejectsNewWorkAndWaitsForInflight(t *testing.T) {
 	go func() { drained <- s.Drain(context.Background()) }()
 	waitFor(t, s.Draining)
 
-	if _, err := s.Infer(context.Background(), req(100)); status.Code(err) != codes.Unavailable {
-		t.Fatalf("new request during drain: code = %v, want Unavailable", status.Code(err))
+	// A worker that wrongly accepts the request would block in sleep, so the
+	// probe runs in a goroutine and the test fails fast instead of hanging.
+	probe := make(chan error, 1)
+	go func() { _, err := s.Infer(context.Background(), req(100)); probe <- err }()
+	select {
+	case err := <-probe:
+		if status.Code(err) != codes.Unavailable {
+			t.Fatalf("new request during drain: code = %v, want Unavailable", status.Code(err))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("draining worker accepted a new request instead of rejecting it")
 	}
-	hb, _ := s.Heartbeat(context.Background(), &pb.HeartbeatRequest{})
+	hb, err := s.Heartbeat(context.Background(), &pb.HeartbeatRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if hb.Healthy {
 		t.Fatal("draining worker reported healthy")
 	}
 	select {
-	case <-drained:
-		t.Fatal("drain returned with a request in flight")
+	case err := <-drained:
+		t.Fatalf("drain returned (%v) with a request in flight", err)
 	case <-time.After(30 * time.Millisecond):
 	}
 	close(release)
@@ -207,40 +219,49 @@ func TestDrainTimeout(t *testing.T) {
 	}
 }
 
+// call sends one request to the admin API and returns status and body.
+func call(t *testing.T, method, url, body string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, b
+}
+
 func TestAdminFaultsEndpoint(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	s := NewServer(Config{ID: "w", TotalVRAMMB: 100}, nil, reg)
 	ts := httptest.NewServer(s.AdminMux(reg))
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/admin/faults", "application/json", strings.NewReader(`{"error_rate":0.5,"extra_latency_ms":20}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+	code, body := call(t, http.MethodPost, ts.URL+"/admin/faults", `{"error_rate":0.5,"extra_latency_ms":20}`)
 	var got FaultConfig
-	_ = json.NewDecoder(resp.Body).Decode(&got)
-	resp.Body.Close()
+	if err := json.Unmarshal(body, &got); err != nil || code != http.StatusOK {
+		t.Fatalf("POST faults = %d %s (%v)", code, body, err)
+	}
 	if got.ErrorRate != 0.5 || got.ExtraLatencyMs != 20 || got.Slowdown != 1 {
 		t.Fatalf("faults = %+v", got)
 	}
 
-	resp, _ = http.Post(ts.URL+"/admin/faults", "application/json", strings.NewReader(`{"bogus":1}`))
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("unknown field status = %d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	r, _ := http.NewRequest(http.MethodDelete, ts.URL+"/admin/faults", nil)
-	resp, _ = http.DefaultClient.Do(r)
-	resp.Body.Close()
-	if s.Faults().Get().ErrorRate != 0 {
-		t.Fatal("faults not cleared")
+	if code, _ := call(t, http.MethodPost, ts.URL+"/admin/faults", `{"bogus":1}`); code != http.StatusBadRequest {
+		t.Fatalf("unknown field status = %d", code)
 	}
 
-	resp, _ = http.Get(ts.URL + "/metrics")
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(body), "inferworker_vram_total_mb") {
+	if code, _ := call(t, http.MethodDelete, ts.URL+"/admin/faults", ""); code != http.StatusOK || s.Faults().Get().ErrorRate != 0 {
+		t.Fatalf("DELETE faults = %d, error rate %v; want cleared", code, s.Faults().Get().ErrorRate)
+	}
+
+	if _, body := call(t, http.MethodGet, ts.URL+"/metrics", ""); !strings.Contains(string(body), "inferworker_vram_total_mb") {
 		t.Fatal("metrics missing inferworker_vram_total_mb")
 	}
 }

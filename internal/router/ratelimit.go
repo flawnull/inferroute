@@ -51,6 +51,7 @@ type RateLimiter struct {
 	now       func() time.Time
 }
 
+// NewRateLimiter gives every tenant a token bucket with limit def, or its entry in overrides.
 func NewRateLimiter(def Limit, overrides map[string]Limit) *RateLimiter {
 	if overrides == nil {
 		overrides = map[string]Limit{}
@@ -102,6 +103,7 @@ func (rl *RateLimiter) Evict() int {
 	return n
 }
 
+// Len reports how many tenant buckets are held in memory.
 func (rl *RateLimiter) Len() int {
 	rl.mu.RLock()
 	defer rl.mu.RUnlock()

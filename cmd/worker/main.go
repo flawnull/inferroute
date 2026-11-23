@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -28,6 +29,14 @@ func main() {
 		envconf.Probe(*probe)
 	}
 
+	if err := run(); err != nil {
+		envconf.Logger("worker").Error("worker failed", "err", err)
+		os.Exit(1)
+	}
+}
+
+// run serves until SIGTERM or SIGINT, then drains in-flight work.
+func run() error {
 	host, _ := os.Hostname()
 	cfg := worker.Config{
 		ID:              envconf.String("WORKER_ID", host),
@@ -51,10 +60,9 @@ func main() {
 	reg := prometheus.NewRegistry()
 	srv := worker.NewServer(cfg, log, reg)
 
-	lis, err := net.Listen("tcp", grpcAddr)
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", grpcAddr)
 	if err != nil {
-		log.Error("listen", "addr", grpcAddr, "err", err)
-		os.Exit(1)
+		return fmt.Errorf("listen %s: %w", grpcAddr, err)
 	}
 	gs := grpc.NewServer(
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 5 * time.Second, PermitWithoutStream: true}),
@@ -79,14 +87,15 @@ func main() {
 	select {
 	case <-ctx.Done():
 	case err := <-errc:
-		log.Error("server failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("server failed: %w", err)
 	}
 
 	log.Info("shutdown signal received")
 	dctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
-	_ = srv.Drain(dctx)
+	if err := srv.Drain(dctx); err != nil {
+		log.Warn("drain timed out; stopping with requests in flight", "err", err)
+	}
 
 	done := make(chan struct{})
 	go func() { gs.GracefulStop(); close(done) }()
@@ -97,6 +106,9 @@ func main() {
 	}
 	sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer scancel()
-	_ = admin.Shutdown(sctx)
+	if err := admin.Shutdown(sctx); err != nil {
+		return fmt.Errorf("admin shutdown: %w", err)
+	}
 	log.Info("worker stopped")
+	return nil
 }

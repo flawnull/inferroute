@@ -9,6 +9,7 @@ type VRAMPool struct {
 	used  atomic.Int64
 }
 
+// NewVRAMPool returns an empty pool of totalMB megabytes.
 func NewVRAMPool(totalMB int64) *VRAMPool {
 	return &VRAMPool{total: totalMB}
 }
@@ -39,6 +40,11 @@ func (p *VRAMPool) Release(mb int64) {
 	}
 }
 
-func (p *VRAMPool) Used() int64      { return p.used.Load() }
-func (p *VRAMPool) Total() int64     { return p.total }
+// Used is the reserved VRAM in MB.
+func (p *VRAMPool) Used() int64 { return p.used.Load() }
+
+// Total is the pool size in MB.
+func (p *VRAMPool) Total() int64 { return p.total }
+
+// Available is Total minus Used.
 func (p *VRAMPool) Available() int64 { return p.total - p.used.Load() }

@@ -48,6 +48,7 @@ func (w *Worker) ID() string {
 	return w.Addr
 }
 
+// Healthy reports whether the worker's recent heartbeats succeeded.
 func (w *Worker) Healthy() bool { return w.healthy.Load() }
 
 // Free is the VRAM this router believes it can still place on the worker.
@@ -95,6 +96,7 @@ type WorkerStatus struct {
 	LastHeartbeatMs int64   `json:"last_heartbeat_ago_ms"`
 }
 
+// Status is a point-in-time snapshot of the worker for /healthz.
 func (w *Worker) Status() WorkerStatus {
 	ago := int64(-1)
 	if ls := w.lastSeen.Load(); ls > 0 {
@@ -115,6 +117,7 @@ type Discoverer interface {
 // StaticDiscoverer returns a fixed address list.
 type StaticDiscoverer []string
 
+// Discover returns the fixed address list.
 func (s StaticDiscoverer) Discover(context.Context) ([]string, error) { return s, nil }
 
 // DNSDiscoverer resolves a hostname (e.g. a Kubernetes headless Service) to
@@ -125,6 +128,7 @@ type DNSDiscoverer struct {
 	Resolver *net.Resolver
 }
 
+// Discover resolves the DNS name to one address per IP.
 func (d DNSDiscoverer) Discover(ctx context.Context) ([]string, error) {
 	r := d.Resolver
 	if r == nil {
@@ -141,6 +145,7 @@ func (d DNSDiscoverer) Discover(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+// RegistryConfig sets heartbeat timing, discovery and the per-worker breaker.
 type RegistryConfig struct {
 	RouterID          string
 	HeartbeatInterval time.Duration
@@ -169,6 +174,7 @@ type Registry struct {
 	OnIdentified func(id string)
 }
 
+// NewRegistry tracks the workers that disc returns. Call Run to start heartbeats.
 func NewRegistry(cfg RegistryConfig, disc Discoverer, log *slog.Logger) *Registry {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = 500 * time.Millisecond

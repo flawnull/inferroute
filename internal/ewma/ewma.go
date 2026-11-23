@@ -3,6 +3,7 @@ package ewma
 
 import "sync"
 
+// EWMA is an exponentially weighted moving average that is safe for concurrent use.
 type EWMA struct {
 	mu    sync.Mutex
 	alpha float64
@@ -19,6 +20,7 @@ func New(alpha float64) *EWMA {
 	return &EWMA{alpha: alpha}
 }
 
+// Observe folds one sample into the average.
 func (e *EWMA) Observe(v float64) {
 	e.mu.Lock()
 	if !e.init {
@@ -36,6 +38,7 @@ func (e *EWMA) Set(v float64) {
 	e.mu.Unlock()
 }
 
+// Value returns the current average.
 func (e *EWMA) Value() float64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()

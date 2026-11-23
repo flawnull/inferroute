@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"sync/atomic"
@@ -33,6 +34,7 @@ type Config struct {
 	Faults     FaultConfig
 }
 
+// Server is a simulated GPU worker serving the WorkerService gRPC API.
 type Server struct {
 	pb.UnimplementedWorkerServiceServer
 
@@ -47,6 +49,7 @@ type Server struct {
 	sleep    func(ctx context.Context, d time.Duration) error
 }
 
+// NewServer builds a worker and registers its metrics on reg.
 func NewServer(cfg Config, log *slog.Logger, reg prometheus.Registerer) *Server {
 	if log == nil {
 		log = slog.Default()
@@ -66,11 +69,19 @@ func NewServer(cfg Config, log *slog.Logger, reg prometheus.Registerer) *Server 
 	return s
 }
 
+// Faults returns the live fault-injection knobs.
 func (s *Server) Faults() *Faults { return s.faults }
-func (s *Server) VRAM() *VRAMPool { return s.vram }
-func (s *Server) Active() int64   { return s.active.Load() }
-func (s *Server) Draining() bool  { return s.draining.Load() }
 
+// VRAM returns the worker's memory pool.
+func (s *Server) VRAM() *VRAMPool { return s.vram }
+
+// Active is the number of requests in flight.
+func (s *Server) Active() int64 { return s.active.Load() }
+
+// Draining reports whether Drain has started.
+func (s *Server) Draining() bool { return s.draining.Load() }
+
+// Infer reserves VRAM, simulates the compute time and returns a fake completion.
 func (s *Server) Infer(ctx context.Context, req *pb.InferRequest) (*pb.InferResponse, error) {
 	resp, err := s.infer(ctx, req)
 	s.metrics.requests.WithLabelValues(status.Code(err).String()).Inc()
@@ -135,15 +146,27 @@ func (s *Server) computeLatency(req *pb.InferRequest, active int64, f FaultConfi
 	return d + time.Duration(f.ExtraLatencyMs)*time.Millisecond
 }
 
+// Heartbeat reports capacity, load and health to the router.
 func (s *Server) Heartbeat(context.Context, *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
 	return &pb.HeartbeatResponse{
 		WorkerId:        s.cfg.ID,
 		AvailableVramMb: s.vram.Available(),
 		TotalVramMb:     s.vram.Total(),
-		ActiveRequests:  int32(s.active.Load()),
+		ActiveRequests:  clampInt32(s.active.Load()),
 		EwmaLatencyMs:   s.ewma.Value(),
 		Healthy:         !s.draining.Load() && !s.faults.Get().Unhealthy,
 	}, nil
+}
+
+// clampInt32 saturates instead of wrapping, so an absurd count never turns negative.
+func clampInt32(v int64) int32 {
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if v < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(v)
 }
 
 // Drain stops accepting new work and blocks until in-flight requests finish

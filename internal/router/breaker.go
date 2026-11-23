@@ -9,6 +9,7 @@ import (
 // BreakerState values double as the inferroute_circuit_breaker_state gauge.
 type BreakerState int
 
+// Breaker states: closed passes traffic, open rejects it, half-open admits probes.
 const (
 	StateClosed   BreakerState = 0
 	StateHalfOpen BreakerState = 1
@@ -27,6 +28,7 @@ func (s BreakerState) String() string {
 	return "unknown"
 }
 
+// BreakerConfig tunes when a worker's breaker opens and how it recovers.
 type BreakerConfig struct {
 	// FailureThreshold consecutive failures trip Closed -> Open.
 	FailureThreshold int
@@ -101,6 +103,7 @@ type Breaker struct {
 	notify func(from, to BreakerState)
 }
 
+// NewBreaker returns a closed breaker, filling unset config fields with defaults.
 func NewBreaker(cfg BreakerConfig) *Breaker {
 	return &Breaker{cfg: cfg.withDefaults(), now: time.Now, rand: rand.Float64}
 }

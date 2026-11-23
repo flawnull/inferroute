@@ -1,6 +1,8 @@
 package envconf
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -26,4 +28,32 @@ func TestTypedGetters(t *testing.T) {
 	if Int("I", 0) != 7 || Float("F", 0) != 0.25 || !Bool("B", false) || String("S_UNSET", "d") != "d" {
 		t.Fatal("typed getters returned wrong values")
 	}
+}
+
+func TestHealthProbe(t *testing.T) {
+	serve := func(code int) string {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+		t.Cleanup(ts.Close)
+		return ts.URL
+	}
+	t.Run("passes when the endpoint answers 2xx", func(t *testing.T) {
+		if err := probe(serve(http.StatusOK)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("fails when the endpoint answers 503", func(t *testing.T) {
+		if err := probe(serve(http.StatusServiceUnavailable)); err == nil {
+			t.Fatal("probe passed on 503")
+		}
+	})
+	t.Run("fails when nothing is listening", func(t *testing.T) {
+		if err := probe("http://127.0.0.1:1/healthz"); err == nil {
+			t.Fatal("probe passed with no server")
+		}
+	})
+	t.Run("fails on a URL that cannot be requested", func(t *testing.T) {
+		if err := probe("://bad"); err == nil {
+			t.Fatal("probe passed on a malformed URL")
+		}
+	})
 }

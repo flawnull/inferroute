@@ -33,7 +33,7 @@ type testWorker struct {
 
 func startWorker(t *testing.T, id, addr string) *testWorker {
 	t.Helper()
-	lis, err := net.Listen("tcp", addr)
+	lis, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,13 +124,16 @@ type result struct {
 func (h *harness) infer(client *http.Client, i int) result {
 	model := []string{"llama-3-8b", "phi-3-mini"}[i%2]
 	body := fmt.Sprintf(`{"model_id":%q,"prompt_tokens":32,"max_tokens":16}`, model)
-	req, _ := http.NewRequest(http.MethodPost, h.url+"/v1/infer", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, h.url+"/v1/infer", strings.NewReader(body))
+	if err != nil {
+		return result{code: -1}
+	}
 	req.Header.Set("X-Tenant-ID", fmt.Sprintf("tenant-%d", i%3))
 	resp, err := client.Do(req)
 	if err != nil {
 		return result{code: -1}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out router.InferResponse
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return result{code: resp.StatusCode, workerID: out.WorkerID, attempts: out.Attempts}
@@ -314,11 +317,17 @@ func TestDuplicateIdentityIsRejected(t *testing.T) {
 			t.Fatalf("healthy workers = %d, want 1", healthy)
 		}
 	}
-	resp, err := http.Get(h.url + "/metrics")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.url+"/metrics", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/metrics = %d with duplicate identities", resp.StatusCode)
 	}

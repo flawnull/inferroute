@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +23,7 @@ import (
 	pb "inferroute/gen/inferencepb"
 )
 
+// Config holds the router's request-path settings. Zero values get defaults.
 type Config struct {
 	// DefaultTimeout applies when a request has no timeout_ms; MaxTimeout caps it.
 	DefaultTimeout time.Duration
@@ -38,6 +40,12 @@ type Config struct {
 	Models       map[string]int64
 	RateLimit    Limit
 	TenantLimits map[string]Limit
+	// MaxTenantLabels bounds the tenant label on request metrics. X-Tenant-ID
+	// is caller-controlled, so without a bound any client could create
+	// unlimited Prometheus series. Tenants with configured limits always keep
+	// their own label; the first MaxTenantLabels others do too, the rest are
+	// reported as "other".
+	MaxTenantLabels int
 }
 
 func (c Config) withDefaults() Config {
@@ -56,9 +64,13 @@ func (c Config) withDefaults() Config {
 	if c.RateLimit.Rate <= 0 {
 		c.RateLimit = Limit{Rate: 100, Burst: 200}
 	}
+	if c.MaxTenantLabels <= 0 {
+		c.MaxTenantLabels = 100
+	}
 	return c
 }
 
+// Router is the HTTP front end: it admits, schedules and fails over requests.
 type Router struct {
 	cfg     Config
 	log     *slog.Logger
@@ -67,8 +79,12 @@ type Router struct {
 	limiter *RateLimiter
 	metrics *Metrics
 	prom    prometheus.Gatherer
+
+	labelMu sync.Mutex
+	labels  map[string]struct{} // tenants that have their own metric label
 }
 
+// New builds a router over the workers in reg.
 func New(cfg Config, reg *Registry, log *slog.Logger) *Router {
 	cfg = cfg.withDefaults()
 	if log == nil {
@@ -83,6 +99,7 @@ func New(cfg Config, reg *Registry, log *slog.Logger) *Router {
 		limiter: NewRateLimiter(cfg.RateLimit, cfg.TenantLimits),
 		metrics: NewMetrics(promReg, reg),
 		prom:    promReg,
+		labels:  map[string]struct{}{},
 	}
 	reg.OnIdentified = rt.metrics.initWorker
 	return rt
@@ -91,6 +108,7 @@ func New(cfg Config, reg *Registry, log *slog.Logger) *Router {
 // Limiter exposes the rate limiter so callers can run eviction.
 func (rt *Router) Limiter() *RateLimiter { return rt.limiter }
 
+// Handler serves /v1/infer, /healthz, /readyz and /metrics.
 func (rt *Router) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/infer", rt.handleInfer)
@@ -255,7 +273,7 @@ func (rt *Router) timeoutFor(in InferRequest) time.Duration {
 
 func (rt *Router) observe(start time.Time, code int, model, tenant string) {
 	st := strconv.Itoa(code)
-	rt.metrics.requests.WithLabelValues(st, model, tenantLabel(tenant)).Inc()
+	rt.metrics.requests.WithLabelValues(st, model, rt.tenantLabel(tenant)).Inc()
 	rt.metrics.duration.WithLabelValues(model, st).Observe(time.Since(start).Seconds())
 }
 
@@ -455,12 +473,25 @@ func requestID(r *http.Request) string {
 	return hex.EncodeToString(b[:])
 }
 
-func tenantLabel(t string) string {
+// tenantLabel bounds the cardinality of the tenant metric label.
+func (rt *Router) tenantLabel(t string) string {
 	if t == "" {
 		return "none"
 	}
 	if len(t) > 64 {
-		return t[:64]
+		t = t[:64]
 	}
+	if _, ok := rt.cfg.TenantLimits[t]; ok {
+		return t
+	}
+	rt.labelMu.Lock()
+	defer rt.labelMu.Unlock()
+	if _, ok := rt.labels[t]; ok {
+		return t
+	}
+	if len(rt.labels) >= rt.cfg.MaxTenantLabels {
+		return "other"
+	}
+	rt.labels[t] = struct{}{}
 	return t
 }

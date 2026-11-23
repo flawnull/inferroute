@@ -41,6 +41,7 @@ type Scheduler struct {
 	QueueTimeout time.Duration
 }
 
+// NewScheduler places requests on reg's workers, waiting up to queueTimeout for VRAM.
 func NewScheduler(reg *Registry, queueTimeout time.Duration) *Scheduler {
 	return &Scheduler{reg: reg, QueueTimeout: queueTimeout}
 }

@@ -5,6 +5,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
+// Metrics holds the router's Prometheus collectors.
 type Metrics struct {
 	requests  *prometheus.CounterVec
 	duration  *prometheus.HistogramVec
@@ -12,6 +13,7 @@ type Metrics struct {
 	attempts  *prometheus.CounterVec
 }
 
+// NewMetrics registers the router collectors on reg; r feeds the per-worker gauges.
 func NewMetrics(reg prometheus.Registerer, r *Registry) *Metrics {
 	m := &Metrics{
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
